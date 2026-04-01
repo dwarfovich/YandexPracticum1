@@ -1,9 +1,11 @@
-#include "cmd_options.h"
+#include "program_options.h"
 #include "crypto_guard_ctx.h"
+
+#include <openssl/evp.h>
+
 #include <algorithm>
 #include <array>
 #include <iostream>
-#include <openssl/evp.h>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -34,6 +36,9 @@ AesCipherParams CreateChiperParamsFromPassword(std::string_view password) {
 }
 
 int main(int argc, char *argv[]) {
+    CryptoGuard::ProgramOptions options;
+    options.Parse(argc, argv);
+
     try {
         //
         // OpenSSL пример использования:
