@@ -58,7 +58,7 @@ std::string ProgramOptions::ParseCommand(const boost::program_options::variables
     return std::string();
 }
 
-std::string ProgramOptions::Parse(int argc, char *argv[]) noexcept
+std::string ProgramOptions::Parse(int argc, const char * const argv[]) noexcept
 {
     parsingStatus_ = PARSING_STATUS::SUCCESS;
     namespace po = boost::program_options;

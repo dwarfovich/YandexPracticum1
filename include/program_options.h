@@ -22,7 +22,7 @@ public:
         INVALID_ARGUMENTS_ERROR,
     };
 
-    std::string Parse(int argc, char *argv[]) noexcept;
+    std::string Parse(int argc, const char * const argv[]) noexcept;
 
     PARSING_STATUS GetParsingStatus() const noexcept { return parsingStatus_; }
     COMMAND_TYPE GetCommand() const noexcept { return command_; }
