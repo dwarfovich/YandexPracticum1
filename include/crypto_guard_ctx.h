@@ -1,13 +1,15 @@
 #pragma once
+#include "compat_propagate_const.h"
 
+#include <memory>
 #include <string>
 
 namespace CryptoGuard {
 
 class CryptoGuardCtx {
 public:
-    CryptoGuardCtx() {}
-    ~CryptoGuardCtx() {}
+    CryptoGuardCtx();
+    ~CryptoGuardCtx();
 
     CryptoGuardCtx(const CryptoGuardCtx &) = delete;
     CryptoGuardCtx &operator=(const CryptoGuardCtx &) = delete;
@@ -22,7 +24,7 @@ public:
 
 private:
     class Impl;
-    Impl *pImpl_;
+    propagate_const<std::unique_ptr<Impl>> pImpl_;
 };
 
 }  // namespace CryptoGuard
