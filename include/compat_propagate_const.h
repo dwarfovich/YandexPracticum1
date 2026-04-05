@@ -6,7 +6,7 @@ using propagate_const = std::experimental::propagate_const<T>;
 }
 #else
 #include <utility>
-
+// Заглушка для propagate_const, если <experimental/propagate_const> недоступен, в частности в MSVC.
 namespace CryptoGuard {
 template <typename T>
 class propagate_const {
