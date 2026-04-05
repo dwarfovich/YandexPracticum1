@@ -18,7 +18,7 @@ public:
     // API
     void EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
     void DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
-    std::string CalculateChecksum(std::iostream &inStream);
+    std::string CalculateChecksum(std::istream &inStream);
 
 private:
     class Impl;

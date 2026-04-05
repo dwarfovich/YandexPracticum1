@@ -2,11 +2,13 @@
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include <array>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -41,7 +43,21 @@ struct AesCipherParams {
     std::array<unsigned char, IV_SIZE> iv;    // Initialization vector
 };
 
-AesCipherParams CreateCipherParamsFromPassword(std::string_view password, CipherOperation operation) {
+class CryptoGuardCtx::Impl {
+public:
+    static AesCipherParams CreateCipherParamsFromPassword(std::string_view password, CipherOperation operation);
+
+    void EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
+    void DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
+    std::string CalculateChecksum(std::istream &inStream);
+
+private:
+    void PerformCipherOperation(std::istream &inStream, std::ostream &outStream, std::string_view password,
+                                CipherOperation operation);
+};
+
+AesCipherParams CryptoGuardCtx::Impl::CreateCipherParamsFromPassword(std::string_view password,
+                                                                     CipherOperation operation) {
     AesCipherParams params{operation};
     constexpr std::array<unsigned char, 8> salt = {'1', '2', '3', '4', '5', '6', '7', '8'};
     const int result = EVP_BytesToKey(params.cipher, EVP_sha256(), salt.data(),
@@ -53,17 +69,6 @@ AesCipherParams CreateCipherParamsFromPassword(std::string_view password, Cipher
 
     return params;
 }
-
-class CryptoGuardCtx::Impl {
-public:
-    void EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
-    void DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
-    std::string CalculateChecksum(std::iostream &inStream) { return "NOT_IMPLEMENTED"; }
-
-private:
-    void PerformCipherOperation(std::istream &inStream, std::ostream &outStream, std::string_view password,
-                                CipherOperation operation);
-};
 
 void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
     PerformCipherOperation(inStream, outStream, password, CipherOperation::ENCRYPT);
@@ -104,7 +109,7 @@ void CryptoGuardCtx::Impl::PerformCipherOperation(std::istream &inStream, std::o
 
     int outLength = 0;
     std::size_t bytesRead = 0;
-    do{
+    do {
         inStream.read(reinterpret_cast<char *const>(inBuffer.data()), inBuffer.size());
         if (!inStream && !inStream.eof()) {
             throw std::runtime_error{"Failed to read data from inStream"};
@@ -132,6 +137,57 @@ void CryptoGuardCtx::Impl::DecryptFile(std::istream &inStream, std::ostream &out
     PerformCipherOperation(inStream, outStream, password, CipherOperation::DECRYPT);
 }
 
+std::string ToHex(const std::array<unsigned char, SHA256_DIGEST_LENGTH> &hash) {
+    std::ostringstream oss;
+    for (const auto c : hash) {
+        oss << std::hex << std::setw(2) << std::setfill('0') << int(c);
+    }
+    return oss.str();
+}
+
+std::string CryptoGuardCtx::Impl::CalculateChecksum(std::istream &inStream) {
+    if (!inStream) {
+        throw std::runtime_error("Input stream is not valid");
+    }
+
+    using MDContext = std::unique_ptr<EVP_MD_CTX, decltype([](auto *ptr) { EVP_MD_CTX_free(ptr); })>;
+    MDContext context{EVP_MD_CTX_new()};
+    if (!context) {
+        ThrowOpenSslErrorException("Failed to create EVP_MD_CTX", ERR_get_error(), "Context initialization");
+    }
+
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> hash;
+    if (EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1) {
+        ThrowOpenSslErrorException("Failed to initialize digest", ERR_get_error(), "Digest initialization");
+    }
+
+    static const std::size_t bufferSize = 4096;
+    std::vector<char> buffer(bufferSize);
+    while (inStream.good()) {
+        inStream.read(buffer.data(), buffer.size());
+        if (!inStream && !inStream.eof()) {
+            throw std::runtime_error{"Failed to read data from inStream"};
+        }
+        const auto bytesRead = inStream.gcount();
+        if (bytesRead > 0) {
+            if (EVP_DigestUpdate(context.get(), buffer.data(), bytesRead) != 1) {
+                ThrowOpenSslErrorException("Digest update failed", ERR_get_error(), "Digest update");
+            }
+        }
+    }
+
+    unsigned int hashLength = 0;
+    if (EVP_DigestFinal_ex(context.get(), hash.data(), &hashLength) != 1) {
+        ThrowOpenSslErrorException("Digest finalization failed", ERR_get_error(), "Digest finalization");
+    }
+
+    if (hashLength != SHA256_DIGEST_LENGTH) {
+        throw std::runtime_error("Unexpected hash length");
+    }
+
+    return ToHex(hash);
+}
+
 CryptoGuardCtx::CryptoGuardCtx() : pImpl_{std::make_unique<Impl>()} {}
 CryptoGuardCtx::~CryptoGuardCtx() = default;
 
@@ -142,6 +198,6 @@ void CryptoGuardCtx::EncryptFile(std::istream &inStream, std::ostream &outStream
 void CryptoGuardCtx::DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
     pImpl_->DecryptFile(inStream, outStream, password);
 }
-std::string CryptoGuardCtx::CalculateChecksum(std::iostream &inStream) { return pImpl_->CalculateChecksum(inStream); }
+std::string CryptoGuardCtx::CalculateChecksum(std::istream &inStream) { return pImpl_->CalculateChecksum(inStream); }
 
 }  // namespace CryptoGuard
