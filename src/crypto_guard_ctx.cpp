@@ -1,7 +1,8 @@
 #include "crypto_guard_ctx.h"
 
-#include <openssl/evp.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <array>
 #include <iostream>
@@ -16,6 +17,15 @@ enum class CipherOperation {
     DECRYPT = 0,
     ENCRYPT = 1,
 };
+
+void ThrowOpenSslErrorException(const std::string &exceptionMessage, unsigned long openSslErrorCode,
+                                const std::string &context) {
+    static const std::size_t errorMessageBufferSize = 256;
+    char errorBuffer[errorMessageBufferSize];
+    ERR_error_string(openSslErrorCode, errorBuffer);
+    throw std::runtime_error{exceptionMessage + ", OpenSSL error code: " + std::to_string(openSslErrorCode) + " (" +
+                             errorBuffer + "); Context: " + context};
+}
 
 struct AesCipherParams {
     AesCipherParams(CipherOperation op) : operation(op) {}
@@ -34,13 +44,11 @@ struct AesCipherParams {
 AesCipherParams CreateCipherParamsFromPassword(std::string_view password, CipherOperation operation) {
     AesCipherParams params{operation};
     constexpr std::array<unsigned char, 8> salt = {'1', '2', '3', '4', '5', '6', '7', '8'};
-
-    int result = EVP_BytesToKey(params.cipher, EVP_sha256(), salt.data(),
-                                reinterpret_cast<const unsigned char *const>(password.data()), password.size(), 1,
-                                params.key.data(), params.iv.data());
-
-    if (result == 0) {
-        throw std::runtime_error{"Failed to create a key from password"};
+    const int result = EVP_BytesToKey(params.cipher, EVP_sha256(), salt.data(),
+                                      reinterpret_cast<const unsigned char *const>(password.data()), password.size(), 1,
+                                      params.key.data(), params.iv.data());
+    if (!result) {
+        ThrowOpenSslErrorException("Failed to create a key from password", ERR_get_error(), "Create cipher params");
     }
 
     return params;
@@ -53,7 +61,8 @@ public:
     std::string CalculateChecksum(std::iostream &inStream) { return "NOT_IMPLEMENTED"; }
 
 private:
-    void PerformCipherOperation(std::istream &inStream, std::ostream &outStream, std::string_view password, CipherOperation operation);
+    void PerformCipherOperation(std::istream &inStream, std::ostream &outStream, std::string_view password,
+                                CipherOperation operation);
 };
 
 void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
@@ -61,8 +70,7 @@ void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &out
 }
 
 void CryptoGuardCtx::Impl::PerformCipherOperation(std::istream &inStream, std::ostream &outStream,
-                                                  std::string_view password,
-                            CipherOperation operation) {
+                                                  std::string_view password, CipherOperation operation) {
     if (!inStream) {
         throw std::runtime_error{"Input stream is not valid"};
     }
@@ -73,13 +81,13 @@ void CryptoGuardCtx::Impl::PerformCipherOperation(std::istream &inStream, std::o
     using CipherContext = std::unique_ptr<EVP_CIPHER_CTX, decltype([](auto *ptr) { EVP_CIPHER_CTX_free(ptr); })>;
     CipherContext cipherContext{EVP_CIPHER_CTX_new()};
     const auto &cipherParameters = CreateCipherParamsFromPassword(password, operation);
+    const auto operationCode = (operation == CipherOperation::DECRYPT ? 0 : 1);
 
     std::vector<unsigned char> inBuffer(cipherParameters.BUFFER_SIZE);
     std::vector<unsigned char> outBuffer(cipherParameters.BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH);
 
-    /* Don't set key or IV right away; we want to check lengths */
-    if (!EVP_CipherInit_ex2(cipherContext.get(), cipherParameters.cipher, nullptr, nullptr,
-                            cipherParameters.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
+    /* Checking key and IV lengths */
+    if (!EVP_CipherInit_ex2(cipherContext.get(), cipherParameters.cipher, nullptr, nullptr, operationCode, nullptr)) {
         throw std::runtime_error{"Failed to initialize cipher"};
     }
     if (EVP_CIPHER_CTX_get_key_length(cipherContext.get()) != cipherParameters.KEY_SIZE) {
@@ -90,38 +98,29 @@ void CryptoGuardCtx::Impl::PerformCipherOperation(std::istream &inStream, std::o
     }
 
     if (!EVP_CipherInit_ex2(cipherContext.get(), nullptr, cipherParameters.key.data(), cipherParameters.iv.data(),
-                            cipherParameters.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
-        throw std::runtime_error{"Failed to set key and IV"};
+                            operationCode, nullptr)) {
+        ThrowOpenSslErrorException("Failed to set key or IV", ERR_get_error(), "Initialize cipher with key and IV");
     }
 
-    std::cout << "Key: ";
-    for (auto b : cipherParameters.key)
-        printf("%02X", b);
-    std::cout << "\nIV: ";
-    for (auto b : cipherParameters.iv)
-        printf("%02X", b);
-    std::cout << std::endl;
-
     int outLength = 0;
-    while (true) {
+    std::size_t bytesRead = 0;
+    do{
         inStream.read(reinterpret_cast<char *const>(inBuffer.data()), inBuffer.size());
         if (!inStream && !inStream.eof()) {
             throw std::runtime_error{"Failed to read data from inStream"};
         }
-        const auto bytesRead = inStream.gcount();
+        bytesRead = inStream.gcount();
         if (!EVP_CipherUpdate(cipherContext.get(), outBuffer.data(), &outLength, inBuffer.data(), bytesRead)) {
-            throw std::runtime_error{"Failed to update cipher"};
+            ThrowOpenSslErrorException("Failed to update cipher", ERR_get_error(), "Cipher update");
         }
         outStream.write(reinterpret_cast<const char *const>(outBuffer.data()), outLength);
         if (!outStream) {
             throw std::runtime_error("Write failed");
         }
-        if (bytesRead < inBuffer.size()) {
-            break;
-        }
-    }
+    } while (bytesRead >= inBuffer.size());
+
     if (!EVP_CipherFinal_ex(cipherContext.get(), outBuffer.data(), &outLength)) {
-        throw std::runtime_error{"Failed to finalize encryption"};
+        ThrowOpenSslErrorException("Failed to finalize encryption", ERR_get_error(), "Finalizing cipher");
     }
     outStream.write(reinterpret_cast<const char *const>(outBuffer.data()), outLength);
     if (!outStream) {

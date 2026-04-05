@@ -78,7 +78,22 @@ TEST(TestCryptoGuardCtx, TestEncrypt_SanityCheck1024Byte) {
     ASSERT_GT(out.str().size(), in.str().size());
 }
 
-TEST(TestCryptoGuardCtx, TestEncryptDecrypt) {
+TEST(TestCryptoGuardCtx, TestEncryptDecrypt_EmptyInput) {
+    CryptoGuard::CryptoGuardCtx cryptoCtx;
+    try {
+        std::istringstream in{""};
+        std::stringstream encrypted;
+        cryptoCtx.EncryptFile(in, encrypted, "pass");
+        std::ostringstream decryptedOut;
+        cryptoCtx.DecryptFile(encrypted, decryptedOut, "pass");
+
+        ASSERT_EQ(in.str(), decryptedOut.str());
+    } catch (const std::exception &ex) {
+        FAIL() << "Exception thrown during Encrypt/Decrypt: " << ex.what();
+    }
+}
+
+TEST(TestCryptoGuardCtx, TestEncryptDecrypt_SmallInput) {
     CryptoGuard::CryptoGuardCtx cryptoCtx;
     try {
         std::istringstream in{"1"};
@@ -91,4 +106,44 @@ TEST(TestCryptoGuardCtx, TestEncryptDecrypt) {
     } catch (const std::exception &ex) {
         FAIL() << "Exception thrown during Encrypt/Decrypt: " << ex.what();
     }
+}
+
+TEST(TestCryptoGuardCtx, TestEncryptDecrypt_BufferSizedInput) {
+    CryptoGuard::CryptoGuardCtx cryptoCtx;
+    try {
+        std::istringstream in{std::string(1024, 'a')};
+        std::stringstream encrypted;
+        cryptoCtx.EncryptFile(in, encrypted, "pass");
+        std::ostringstream decryptedOut;
+        cryptoCtx.DecryptFile(encrypted, decryptedOut, "pass");
+
+        ASSERT_EQ(in.str(), decryptedOut.str());
+    } catch (const std::exception &ex) {
+        FAIL() << "Exception thrown during Encrypt/Decrypt: " << ex.what();
+    }
+}
+
+TEST(TestCryptoGuardCtx, TestEncryptDecrypt_GreaterThanBufferInput) {
+    CryptoGuard::CryptoGuardCtx cryptoCtx;
+    try {
+        std::istringstream in{std::string(1500, 'a')};
+        std::stringstream encrypted;
+        cryptoCtx.EncryptFile(in, encrypted, "pass");
+        std::ostringstream decryptedOut;
+        cryptoCtx.DecryptFile(encrypted, decryptedOut, "pass");
+
+        ASSERT_EQ(in.str(), decryptedOut.str());
+    } catch (const std::exception &ex) {
+        FAIL() << "Exception thrown during Encrypt/Decrypt: " << ex.what();
+    }
+}
+
+TEST(TestCryptoGuardCtx, TestEncryptDecrypt_IncorrectDecryptPassword) {
+    CryptoGuard::CryptoGuardCtx cryptoCtx;
+        std::istringstream in{"Hello, OpenSSL!"};
+        std::stringstream encrypted;
+        cryptoCtx.EncryptFile(in, encrypted, "pass");
+        std::ostringstream decryptedOut;
+        ASSERT_THROW(cryptoCtx.DecryptFile(encrypted, decryptedOut, "wrong_pass"), std::runtime_error);
+
 }
