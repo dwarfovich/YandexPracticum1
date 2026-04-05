@@ -1,6 +1,7 @@
 #include "crypto_guard_ctx.h"
 
 #include <openssl/evp.h>
+#include <openssl/err.h>
 
 #include <array>
 #include <iostream>
@@ -48,11 +49,20 @@ AesCipherParams CreateCipherParamsFromPassword(std::string_view password, Cipher
 class CryptoGuardCtx::Impl {
 public:
     void EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
-    void DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password);
+    void DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password);
     std::string CalculateChecksum(std::iostream &inStream) { return "NOT_IMPLEMENTED"; }
+
+private:
+    void PerformCipherOperation(std::istream &inStream, std::ostream &outStream, std::string_view password, CipherOperation operation);
 };
 
 void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
+    PerformCipherOperation(inStream, outStream, password, CipherOperation::ENCRYPT);
+}
+
+void CryptoGuardCtx::Impl::PerformCipherOperation(std::istream &inStream, std::ostream &outStream,
+                                                  std::string_view password,
+                            CipherOperation operation) {
     if (!inStream) {
         throw std::runtime_error{"Input stream is not valid"};
     }
@@ -61,40 +71,48 @@ void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &out
     }
 
     using CipherContext = std::unique_ptr<EVP_CIPHER_CTX, decltype([](auto *ptr) { EVP_CIPHER_CTX_free(ptr); })>;
-    CipherContext cipherContext_{EVP_CIPHER_CTX_new()};
-    const auto &cipherParameters_ = CreateCipherParamsFromPassword(password, CipherOperation::ENCRYPT);
+    CipherContext cipherContext{EVP_CIPHER_CTX_new()};
+    const auto &cipherParameters = CreateCipherParamsFromPassword(password, operation);
 
-    std::vector<unsigned char> inBuffer(cipherParameters_.BUFFER_SIZE);
-    std::vector<unsigned char> outBuffer(cipherParameters_.BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH);
+    std::vector<unsigned char> inBuffer(cipherParameters.BUFFER_SIZE);
+    std::vector<unsigned char> outBuffer(cipherParameters.BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH);
 
     /* Don't set key or IV right away; we want to check lengths */
-    if (!EVP_CipherInit_ex2(cipherContext_.get(), cipherParameters_.cipher, nullptr, nullptr,
-                            cipherParameters_.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
+    if (!EVP_CipherInit_ex2(cipherContext.get(), cipherParameters.cipher, nullptr, nullptr,
+                            cipherParameters.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
         throw std::runtime_error{"Failed to initialize cipher"};
     }
-    if (EVP_CIPHER_CTX_get_key_length(cipherContext_.get()) != cipherParameters_.KEY_SIZE) {
+    if (EVP_CIPHER_CTX_get_key_length(cipherContext.get()) != cipherParameters.KEY_SIZE) {
         throw std::runtime_error{"Unexpected key length"};
     }
-    if (EVP_CIPHER_CTX_get_iv_length(cipherContext_.get()) != cipherParameters_.IV_SIZE) {
+    if (EVP_CIPHER_CTX_get_iv_length(cipherContext.get()) != cipherParameters.IV_SIZE) {
         throw std::runtime_error{"Unexpected IV length"};
     }
 
-    if (!EVP_CipherInit_ex2(cipherContext_.get(), nullptr, cipherParameters_.key.data(), cipherParameters_.iv.data(),
-                            cipherParameters_.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
+    if (!EVP_CipherInit_ex2(cipherContext.get(), nullptr, cipherParameters.key.data(), cipherParameters.iv.data(),
+                            cipherParameters.operation == CipherOperation::DECRYPT ? 0 : 1, nullptr)) {
         throw std::runtime_error{"Failed to set key and IV"};
     }
 
+    std::cout << "Key: ";
+    for (auto b : cipherParameters.key)
+        printf("%02X", b);
+    std::cout << "\nIV: ";
+    for (auto b : cipherParameters.iv)
+        printf("%02X", b);
+    std::cout << std::endl;
+
     int outLength = 0;
     while (true) {
-        inStream.read(reinterpret_cast<char * const>(inBuffer.data()), inBuffer.size());
+        inStream.read(reinterpret_cast<char *const>(inBuffer.data()), inBuffer.size());
         if (!inStream && !inStream.eof()) {
             throw std::runtime_error{"Failed to read data from inStream"};
         }
         const auto bytesRead = inStream.gcount();
-        if (!EVP_CipherUpdate(cipherContext_.get(), outBuffer.data(), &outLength, inBuffer.data(), bytesRead)) {
+        if (!EVP_CipherUpdate(cipherContext.get(), outBuffer.data(), &outLength, inBuffer.data(), bytesRead)) {
             throw std::runtime_error{"Failed to update cipher"};
         }
-        outStream.write(reinterpret_cast<const char * const>(outBuffer.data()), bytesRead);
+        outStream.write(reinterpret_cast<const char *const>(outBuffer.data()), outLength);
         if (!outStream) {
             throw std::runtime_error("Write failed");
         }
@@ -102,16 +120,18 @@ void CryptoGuardCtx::Impl::EncryptFile(std::istream &inStream, std::ostream &out
             break;
         }
     }
-    if (!EVP_CipherFinal_ex(cipherContext_.get(), outBuffer.data(), &outLength)) {
+    if (!EVP_CipherFinal_ex(cipherContext.get(), outBuffer.data(), &outLength)) {
         throw std::runtime_error{"Failed to finalize encryption"};
     }
-    outStream.write(reinterpret_cast<const char * const>(outBuffer.data()), outLength);
+    outStream.write(reinterpret_cast<const char *const>(outBuffer.data()), outLength);
     if (!outStream) {
         throw std::runtime_error("Write failed");
     }
 }
 
-void CryptoGuardCtx::Impl::DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {}
+void CryptoGuardCtx::Impl::DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
+    PerformCipherOperation(inStream, outStream, password, CipherOperation::DECRYPT);
+}
 
 CryptoGuardCtx::CryptoGuardCtx() : pImpl_{std::make_unique<Impl>()} {}
 CryptoGuardCtx::~CryptoGuardCtx() = default;
@@ -120,7 +140,7 @@ void CryptoGuardCtx::EncryptFile(std::istream &inStream, std::ostream &outStream
     pImpl_->EncryptFile(inStream, outStream, password);
 }
 
-void CryptoGuardCtx::DecryptFile(std::iostream &inStream, std::iostream &outStream, std::string_view password) {
+void CryptoGuardCtx::DecryptFile(std::istream &inStream, std::ostream &outStream, std::string_view password) {
     pImpl_->DecryptFile(inStream, outStream, password);
 }
 std::string CryptoGuardCtx::CalculateChecksum(std::iostream &inStream) { return pImpl_->CalculateChecksum(inStream); }
