@@ -48,7 +48,9 @@ target_link_libraries(unit_tests
     PRIVATE
         ${PROJECT_NAME}_imp
         GTest::GTest
-        GTest::Main)
+        GTest::Main
+        ${Boost_LIBRARIES}
+)
 
 # Включаем тестирование
 enable_testing()
